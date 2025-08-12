@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  hue-mcp:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    image: hue-mcp-server:latest
+    container_name: hue-mcp-server
+    restart: unless-stopped
+    
+    # Environment variables - customize these for your setup
+    environment:
+      - HUE_BRIDGE_IP=${HUE_BRIDGE_IP:-192.168.1.64}
+      - HUE_USERNAME=${HUE_USERNAME:-your_username_here}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HUE_TIMEOUT_CONNECT=5.0
+      - HUE_TIMEOUT_READ=10.0
+      - HUE_MAX_CONNECTIONS=10
+      - HUE_MAX_KEEPALIVE=5
+      - HUE_LIGHT_RATE_LIMIT=10
+      - HUE_GROUP_RATE_LIMIT=1.0
+    
+    # Network configuration - host mode for bridge discovery and communication
+    network_mode: "host"
+    
+    # Alternative: Use bridge network with port mapping if host mode not available
+    # ports:
+    #   - "8080:8080"
+    # networks:
+    #   - bridge
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
