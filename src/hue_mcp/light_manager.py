@@ -23,6 +23,23 @@ class LightControlRequest(BaseModel):
     color_temp: Optional[int] = Field(
         default=366, ge=154, le=500, description="Color temperature"
     )
+    # RGB color support
+    red: Optional[int] = Field(
+        default=None, ge=0, le=255, description="Red component (0-255)"
+    )
+    green: Optional[int] = Field(
+        default=None, ge=0, le=255, description="Green component (0-255)"
+    )
+    blue: Optional[int] = Field(
+        default=None, ge=0, le=255, description="Blue component (0-255)"
+    )
+    # Hue/Saturation color support
+    hue: Optional[int] = Field(
+        default=None, ge=0, le=65535, description="Hue (0-65535)"
+    )
+    saturation: Optional[int] = Field(
+        default=None, ge=0, le=254, description="Saturation (0-254)"
+    )
 
 
 class RoomControlRequest(BaseModel):
@@ -35,6 +52,23 @@ class RoomControlRequest(BaseModel):
     )
     color_temp: Optional[int] = Field(
         default=366, ge=154, le=500, description="Color temperature"
+    )
+    # RGB color support
+    red: Optional[int] = Field(
+        default=None, ge=0, le=255, description="Red component (0-255)"
+    )
+    green: Optional[int] = Field(
+        default=None, ge=0, le=255, description="Green component (0-255)"
+    )
+    blue: Optional[int] = Field(
+        default=None, ge=0, le=255, description="Blue component (0-255)"
+    )
+    # Hue/Saturation color support
+    hue: Optional[int] = Field(
+        default=None, ge=0, le=65535, description="Hue (0-65535)"
+    )
+    saturation: Optional[int] = Field(
+        default=None, ge=0, le=254, description="Saturation (0-254)"
     )
 
 
@@ -94,11 +128,71 @@ class LightManager:
 
         return False
 
+    def _supports_color(self, light_info: Dict[str, Any]) -> bool:
+        """Check if light supports color (RGB/HSB)."""
+        # Check the light type
+        light_type = light_info.get("type", "").lower()
+
+        # Common light types that support color
+        color_types = [
+            "extended color light",
+            "color light",
+        ]
+
+        # Check if type matches known color supporting types
+        if any(color_type in light_type for color_type in color_types):
+            return True
+
+        # Check capabilities if available
+        capabilities = light_info.get("capabilities", {})
+        control = capabilities.get("control", {})
+
+        # Check if xy, hue, or sat are in the control capabilities
+        if any(key in control for key in ["xy", "hue", "sat"]):
+            return True
+
+        return False
+
+    def _rgb_to_xy(self, red: int, green: int, blue: int) -> tuple[float, float]:
+        """Convert RGB values to Hue xy color space."""
+        # Normalize RGB values to 0-1
+        r = red / 255.0
+        g = green / 255.0
+        b = blue / 255.0
+
+        # Apply gamma correction
+        r = pow((r + 0.055) / 1.055, 2.4) if r > 0.04045 else r / 12.92
+        g = pow((g + 0.055) / 1.055, 2.4) if g > 0.04045 else g / 12.92
+        b = pow((b + 0.055) / 1.055, 2.4) if b > 0.04045 else b / 12.92
+
+        # Convert to XYZ color space
+        X = r * 0.4124564 + g * 0.3575761 + b * 0.1804375
+        Y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750
+        Z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041
+
+        # Convert to xy chromaticity coordinates
+        if (X + Y + Z) == 0:
+            return (0.0, 0.0)
+        
+        x = X / (X + Y + Z)
+        y = Y / (X + Y + Z)
+
+        # Ensure values are within Hue's acceptable range
+        x = max(0.0, min(1.0, x))
+        y = max(0.0, min(1.0, y))
+
+        return (x, y)
+
     def _build_light_state(
         self,
         action: str,
         brightness: Optional[int] = None,
         color_temp: Optional[int] = None,
+        red: Optional[int] = None,
+        green: Optional[int] = None,
+        blue: Optional[int] = None,
+        hue: Optional[int] = None,
+        saturation: Optional[int] = None,
         light_info: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build light state dictionary from parameters."""
@@ -108,8 +202,25 @@ class LightManager:
             state["on"] = True
             if brightness is not None:
                 state["bri"] = brightness
-            # Only include color temperature for lights that support it
-            if (
+            
+            # Handle color settings - priority: RGB > hue/sat > color_temp
+            if light_info is not None and self._supports_color(light_info):
+                # RGB color takes priority
+                if red is not None and green is not None and blue is not None:
+                    x, y = self._rgb_to_xy(red, green, blue)
+                    state["xy"] = [x, y]
+                # Hue/saturation color
+                elif hue is not None and saturation is not None:
+                    state["hue"] = hue
+                    state["sat"] = saturation
+                # Fallback to color temperature if supported
+                elif (
+                    color_temp is not None
+                    and self._supports_color_temp(light_info)
+                ):
+                    state["ct"] = color_temp
+            # Non-color lights can still use color temperature
+            elif (
                 color_temp is not None
                 and light_info is not None
                 and self._supports_color_temp(light_info)
@@ -142,13 +253,26 @@ class LightManager:
                     current_on = light_info.get("state", {}).get("on", False)
                     new_action = "off" if current_on else "on"
                     state = self._build_light_state(
-                        new_action, request.brightness, request.color_temp, light_info
+                        new_action, 
+                        request.brightness, 
+                        request.color_temp, 
+                        request.red,
+                        request.green,
+                        request.blue,
+                        request.hue,
+                        request.saturation,
+                        light_info
                     )
                 else:
                     state = self._build_light_state(
                         request.action,
                         request.brightness,
                         request.color_temp,
+                        request.red,
+                        request.green,
+                        request.blue,
+                        request.hue,
+                        request.saturation,
                         light_info,
                     )
 
@@ -194,6 +318,11 @@ class LightManager:
                             action=request.action,
                             brightness=request.brightness,
                             color_temp=request.color_temp,
+                            red=request.red,
+                            green=request.green,
+                            blue=request.blue,
+                            hue=request.hue,
+                            saturation=request.saturation,
                         )
                         result = await self.control_light(light_request)
                         return {
@@ -256,7 +385,15 @@ class LightManager:
                     action["on"] = True
                     if request.brightness is not None:
                         action["bri"] = request.brightness
-                    if request.color_temp is not None:
+                    
+                    # Handle color settings - priority: RGB > hue/sat > color_temp
+                    if request.red is not None and request.green is not None and request.blue is not None:
+                        x, y = self._rgb_to_xy(request.red, request.green, request.blue)
+                        action["xy"] = [x, y]
+                    elif request.hue is not None and request.saturation is not None:
+                        action["hue"] = request.hue
+                        action["sat"] = request.saturation
+                    elif request.color_temp is not None:
                         action["ct"] = request.color_temp
                 elif request.action == "off":
                     action["on"] = False
